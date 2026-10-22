@@ -7,6 +7,7 @@ struct NoteEditor: View {
     let ref: VerseRef
     let theme: Theme
     @State private var text = ""
+    @State private var original = ""
     @State private var existed = false
     @State private var failed = false
     @FocusState private var focused: Bool
@@ -54,13 +55,14 @@ struct NoteEditor: View {
         }
         .onAppear {
             text = store.note(ref)
+            original = text
             existed = !text.isEmpty
             focused = true
         }
     }
 
     private func save(_ body: String) {
-        if store.setNote(ref, body) { dismiss() } else { failed = true }
+        if store.setNote(ref, body, expected: original) { dismiss() } else { failed = true }
     }
 
     /// The verse as it would be copied: text and reference.

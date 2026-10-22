@@ -259,6 +259,7 @@ pub enum ExportFormat {
 /// folder, laid out as the Mac app's.
 #[derive(uniffi::Object)]
 pub struct Bible {
+    data_dir: PathBuf,
     library: RwLock<Library>,
     study: Mutex<StudyStore>,
 }
@@ -272,7 +273,7 @@ impl Bible {
         let dir = PathBuf::from(data_dir);
         let study = StudyStore::open(&dir.join("study.sqlite"))?;
         let library = Library::open(&dir, Arc::new(|| {}));
-        Ok(Arc::new(Bible { library: RwLock::new(library), study: Mutex::new(study) }))
+        Ok(Arc::new(Bible { data_dir: dir, library: RwLock::new(library), study: Mutex::new(study) }))
     }
 
     pub fn translations(&self) -> Vec<TranslationInfo> {
@@ -488,6 +489,137 @@ impl Bible {
 
     pub fn set_setting(&self, key: String, value: String) -> Result<(), BibleError> {
         Ok(self.study().set_setting(&key, &value)?)
+    }
+
+    pub fn study_library_path(&self) -> Result<Option<String>, BibleError> {
+        Ok(self.study().study_library()?.map(|f| f.path().display().to_string()))
+    }
+
+    pub fn set_note_from(&self, verse: VerseRef, body: String, expected: String) -> Result<(), BibleError> {
+        Ok(self.study().set_note_from(verse.core()?, &body, &expected)?)
+    }
+
+    pub fn connect_study_library(&self, path: String, create: bool) -> Result<(), BibleError> {
+        let path = PathBuf::from(path);
+        if create {
+            std::fs::create_dir_all(&path).map_err(anyhow::Error::from)?;
+        }
+        let folder = if create {
+            study::sync::LibraryFolder::plan_create(&path)?
+        } else {
+            study::sync::LibraryFolder::open(&path)?
+        };
+        self.study().backup_study_library(&self.data_dir)?;
+        let request = self.study().prepare_library_connection(folder)?;
+        let response = request.exchange()?;
+        Ok(self.study().finish_library_sync(response)?)
+    }
+
+    pub fn preview_study_library(&self, path: String, create: bool) -> Result<String, BibleError> {
+        self.prepare_study_library_connection(path, create)?.preview()
+    }
+
+    pub fn prepare_study_library_connection(
+        &self,
+        path: String,
+        create: bool,
+    ) -> Result<Arc<StudyLibrarySync>, BibleError> {
+        let path = PathBuf::from(path);
+        let folder = if create {
+            study::sync::LibraryFolder::plan_create(&path)?
+        } else {
+            study::sync::LibraryFolder::open(&path)?
+        };
+        let request = self.study().prepare_library_connection(folder)?;
+        Ok(Arc::new(StudyLibrarySync {
+            path: request.folder().path().display().to_string(),
+            request: Mutex::new(Some(request)),
+            response: Mutex::new(None),
+        }))
+    }
+
+    pub fn connect_previewed_study_library(&self, exchange: Arc<StudyLibrarySync>) -> Result<(), BibleError> {
+        self.study().backup_study_library(&self.data_dir)?;
+        exchange.exchange()?;
+        self.finish_study_library_sync(exchange)
+    }
+
+    pub fn disconnect_study_library(&self) -> Result<(), BibleError> {
+        Ok(self.study().disconnect_study_library()?)
+    }
+
+    pub fn prepare_study_library_sync(&self) -> Result<Option<Arc<StudyLibrarySync>>, BibleError> {
+        Ok(self.study().prepare_library_sync()?.map(|request| {
+            Arc::new(StudyLibrarySync {
+                path: request.folder().path().display().to_string(),
+                request: Mutex::new(Some(request)),
+                response: Mutex::new(None),
+            })
+        }))
+    }
+
+    pub fn finish_study_library_sync(&self, exchange: Arc<StudyLibrarySync>) -> Result<(), BibleError> {
+        let response = exchange
+            .response
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+            .ok_or_else(|| fail("No completed folder exchange"))?;
+        Ok(self.study().finish_library_sync(response)?)
+    }
+
+    pub fn study_library_conflicts(&self) -> Result<String, BibleError> {
+        Ok(serde_json::to_string(&self.study().library_conflicts()?).map_err(anyhow::Error::from)?)
+    }
+
+    pub fn resolve_study_library_conflict(
+        &self,
+        key: String,
+        revision: String,
+        reviewed: Vec<String>,
+    ) -> Result<(), BibleError> {
+        Ok(self.study().resolve_library_conflict_reviewed(&key, &revision, &reviewed)?)
+    }
+
+    pub fn merge_study_library_note(
+        &self,
+        key: String,
+        body: String,
+        reviewed: Vec<String>,
+    ) -> Result<(), BibleError> {
+        Ok(self.study().merge_library_note(&key, &body, &reviewed)?)
+    }
+}
+
+#[derive(uniffi::Object)]
+pub struct StudyLibrarySync {
+    path: String,
+    request: Mutex<Option<study::sync::SyncRequest>>,
+    response: Mutex<Option<study::sync::SyncResponse>>,
+}
+
+#[uniffi::export]
+impl StudyLibrarySync {
+    pub fn preview(&self) -> Result<String, BibleError> {
+        let request = self.request.lock().unwrap_or_else(|e| e.into_inner());
+        let request = request.as_ref().ok_or_else(|| fail("This exchange has already been used"))?;
+        Ok(format!("{}\n\n{}", self.path, request.preview()?.summary()))
+    }
+
+    pub fn folder_path(&self) -> String {
+        self.path.clone()
+    }
+
+    pub fn exchange(&self) -> Result<(), BibleError> {
+        let request = self
+            .request
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+            .ok_or_else(|| fail("This exchange has already been used"))?;
+        let response = request.exchange()?;
+        *self.response.lock().unwrap_or_else(|e| e.into_inner()) = Some(response);
+        Ok(())
     }
 }
 

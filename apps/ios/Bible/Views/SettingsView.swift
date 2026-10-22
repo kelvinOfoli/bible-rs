@@ -1,10 +1,18 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Theme, type and reading options, applied as you change them.
 struct SettingsView: View {
     @Environment(Store.self) private var store
     @Environment(\.dismiss) private var dismiss
     let theme: Theme
+    @State private var choosingLibrary = false
+    @State private var creatingLibrary = false
+    @State private var pendingLibrary: URL?
+    @State private var confirmingLibrary = false
+    @State private var libraryPreview = ""
+    @State private var mergingNote: StudyLibraryConflict?
+    @State private var confirmingDisconnect = false
 
     var body: some View {
         @Bindable var store = store
@@ -60,6 +68,56 @@ struct SettingsView: View {
                     ExportButton(title: "Export as JSON", format: .json, file: "Bible notes.json")
                 }
 
+                Section("Study Library location") {
+                    if let path = store.librarySync.path {
+                        LabeledContent("Study folder") {
+                            Text(URL(fileURLWithPath: path).lastPathComponent)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        Text("On this device only")
+                    }
+                    Text(store.librarySync.message)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Button("Create Study Library…") {
+                        creatingLibrary = true
+                        choosingLibrary = true
+                    }
+                    .disabled(store.librarySync.working)
+                    Button("Open Existing Library…") {
+                        creatingLibrary = false
+                        choosingLibrary = true
+                    }
+                    .disabled(store.librarySync.working)
+                    if store.librarySync.path != nil {
+                        Button("Check Shared Folder Now") { Task { await store.librarySync.sync() } }
+                            .disabled(store.librarySync.working)
+                        Button("Disconnect Library…") { confirmingDisconnect = true }
+                            .disabled(store.librarySync.working)
+                    }
+                    Text("Choose an empty folder to create a library, or open the same library on your Mac using iCloud Drive. Notes, highlights and bookmarks are shared; translations, caches and preferences stay on this device.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
+                ForEach(store.librarySync.conflicts) { conflict in
+                    Section("\(conflict.reference) · \(conflict.kind) versions") {
+                        if conflict.kind == "note" {
+                            Button("Merge Text…") { mergingNote = conflict }
+                        }
+                        ForEach(conflict.versions) { version in
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(version.text)
+                                Button(version.deleted ? "Keep Deletion" : "Keep This Version") {
+                                    Task { await store.librarySync.resolve(conflict, version: version) }
+                                }
+                                .disabled(store.librarySync.working)
+                            }
+                        }
+                    }
+                }
+
                 if let t = store.translation {
                     Section("About the \(t.abbrev)") {
                         VStack(alignment: .leading, spacing: 6) {
@@ -89,6 +147,38 @@ struct SettingsView: View {
         }
         .presentationDetents([.medium, .large])
         .presentationBackgroundInteraction(.enabled(upThrough: .medium))
+        .fileImporter(isPresented: $choosingLibrary, allowedContentTypes: [.folder]) { result in
+            switch result {
+            case .success(let url):
+                pendingLibrary = url
+                Task {
+                    do {
+                        libraryPreview = try await store.librarySync.preview(url, create: creatingLibrary)
+                        confirmingLibrary = true
+                    } catch { store.show(error.localizedDescription) }
+                }
+            case .failure(let error): store.show(error.localizedDescription)
+            }
+        }
+        .sheet(item: $mergingNote) { conflict in
+            StudyNoteMergeView(conflict: conflict)
+        }
+        .confirmationDialog("Connect Study Library?", isPresented: $confirmingLibrary, titleVisibility: .visible) {
+            Button("Merge Study Data and Connect") {
+                if let url = pendingLibrary {
+                    Task { await store.librarySync.connect(url) }
+                }
+            }
+            Button("Cancel", role: .cancel) { pendingLibrary = nil }
+        } message: {
+            Text("\(libraryPreview)\n\nMerge both libraries? A recovery backup is saved first. Versions are preserved, and the destination is revalidated before connecting.")
+        }
+        .confirmationDialog("Disconnect this device?", isPresented: $confirmingDisconnect, titleVisibility: .visible) {
+            Button("Disconnect Library") { store.librarySync.disconnect() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Your study data stays on this device. The shared folder and other devices are unchanged.")
+        }
     }
 
     static var version: String {

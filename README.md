@@ -342,6 +342,16 @@ bible-rs export --markdown -o notes.md
 bible-rs import-notes notes.json
 ```
 
+## Shared Study Libraries
+
+Settings → Data → Study Library location lets you create or open a portable folder for notes,
+highlights and bookmarks. Open the same folder in the iPhone app to exchange study data through
+iCloud Drive. SQLite, translations and device preferences stay local. Existing data is backed up
+before connecting, and conflicting versions are preserved for explicit resolution.
+
+See [Study Libraries](docs/study-libraries.md) for setup, offline behavior, the portable format and
+the remaining physical-device iCloud validation required before a stable sync release.
+
 ## iPhone
 
 `apps/ios` is the iPhone app (iPad runs it too): SwiftUI around the same Rust core, through

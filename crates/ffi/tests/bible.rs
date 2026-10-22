@@ -3,6 +3,69 @@ use std::sync::Arc;
 
 use bible_ffi::*;
 
+#[test]
+fn confirmed_connection_rejects_a_library_replaced_since_preview() {
+    let (a, dir_a) = open("preview-a");
+    let (b, dir_b) = open("preview-b");
+    let shared = dir_a.join("selected");
+    let replacement = dir_b.join("replacement");
+    std::fs::create_dir(&shared).unwrap();
+    let create = a.prepare_study_library_connection(shared.display().to_string(), true).unwrap();
+    create.preview().unwrap();
+    a.connect_previewed_study_library(create).unwrap();
+    a.disconnect_study_library().unwrap();
+    a.set_note(JOHN_3_16, "Private note".into()).unwrap();
+    let staged = a.prepare_study_library_connection(shared.display().to_string(), false).unwrap();
+    staged.preview().unwrap();
+    b.set_note(JOHN_3_16, "Unseen replacement".into()).unwrap();
+    b.connect_study_library(replacement.display().to_string(), true).unwrap();
+    let before = std::fs::read_dir(replacement.join("revisions")).unwrap().count();
+    std::fs::rename(&shared, dir_a.join("previewed")).unwrap();
+    std::fs::rename(&replacement, &shared).unwrap();
+    assert!(a.connect_previewed_study_library(staged).is_err());
+    assert!(a.study_library_path().unwrap().is_none());
+    assert_eq!(a.note(JOHN_3_16).unwrap().as_deref(), Some("Private note"));
+    assert_eq!(std::fs::read_dir(shared.join("revisions")).unwrap().count(), before);
+    let _ = std::fs::remove_dir_all(dir_a);
+    let _ = std::fs::remove_dir_all(dir_b);
+}
+
+#[test]
+fn study_library_ffi_roundtrip_and_single_use_exchange() {
+    let (a, dir_a) = open("library-a");
+    let (b, dir_b) = open("library-b");
+    let shared = dir_a.join("shared");
+    a.set_note(JOHN_3_16, "Original note".into()).unwrap();
+    a.connect_study_library(shared.display().to_string(), true).unwrap();
+    assert_eq!(std::fs::read_dir(dir_a.join("library-recovery")).unwrap().count(), 1);
+    let send = a.prepare_study_library_sync().unwrap().unwrap();
+    send.exchange().unwrap();
+    assert!(send.exchange().is_err());
+    a.finish_study_library_sync(send.clone()).unwrap();
+    assert!(a.finish_study_library_sync(send).is_err());
+    b.connect_study_library(shared.display().to_string(), false).unwrap();
+    let receive = b.prepare_study_library_sync().unwrap().unwrap();
+    receive.exchange().unwrap();
+    b.finish_study_library_sync(receive).unwrap();
+    assert_eq!(b.note(JOHN_3_16).unwrap().as_deref(), Some("Original note"));
+    b.set_note(JOHN_3_16, "Phone edit".into()).unwrap();
+    let send = b.prepare_study_library_sync().unwrap().unwrap();
+    send.exchange().unwrap();
+    b.finish_study_library_sync(send).unwrap();
+    let receive = a.prepare_study_library_sync().unwrap().unwrap();
+    receive.exchange().unwrap();
+    a.finish_study_library_sync(receive).unwrap();
+    a.set_note_from(JOHN_3_16, "Open desktop draft".into(), "Original note".into()).unwrap();
+    let conflicts: serde_json::Value = serde_json::from_str(&a.study_library_conflicts().unwrap()).unwrap();
+    assert_eq!(conflicts.as_array().unwrap().len(), 1);
+    assert_eq!(conflicts[0]["versions"].as_array().unwrap().len(), 2);
+    a.disconnect_study_library().unwrap();
+    assert!(a.study_library_path().unwrap().is_none());
+    assert!(shared.join("library.json").is_file());
+    let _ = std::fs::remove_dir_all(dir_a);
+    let _ = std::fs::remove_dir_all(dir_b);
+}
+
 /// A fresh data folder per test.
 fn open(name: &str) -> (Arc<Bible>, PathBuf) {
     let dir = std::env::temp_dir().join(format!("bible-ffi-{name}-{}", std::process::id()));

@@ -78,6 +78,7 @@ enum Sheet: Identifiable, Equatable {
 @Observable
 final class Store {
     @ObservationIgnored let bible: Bible
+    let librarySync: StudyLibraryController
     @ObservationIgnored let bookList: [BookInfo]
     private(set) var translations: [TranslationInfo]
 
@@ -118,11 +119,13 @@ final class Store {
             settings.translation = translations.first?.id ?? "kjv"
         }
         self.bible = bible
+        self.librarySync = StudyLibraryController(bible: bible, bookmarkKey: ProcessInfo.processInfo.arguments.contains("--uitest") ? "bible-rs-uitest-library-bookmark" : "bible-rs-study-library-bookmark")
         self.bookList = bookList
         self.translations = translations
         self.settings = settings
         self.position = position
         jump = JumpRequest(chapter: position.chapter, verse: position.verse)
+        librarySync.changed = { [weak self] in self?.marksVersion += 1 }
     }
 
     /// The study database and imported texts live in Application Support. If that can't be
@@ -280,6 +283,11 @@ final class Store {
     @discardableResult
     func setNote(_ ref: VerseRef, _ body: String) -> Bool {
         study { try bible.setNote(verse: ref, body: body) }
+    }
+
+    @discardableResult
+    func setNote(_ ref: VerseRef, _ body: String, expected: String) -> Bool {
+        study { try bible.setNoteFrom(verse: ref, body: body, expected: expected) }
     }
 
     func setHighlight(_ ref: VerseRef, _ color: HighlightColor?) {
