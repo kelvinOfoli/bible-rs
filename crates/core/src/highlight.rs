@@ -23,7 +23,7 @@ use crate::books::VerseRef;
 use crate::study::HighlightColor;
 
 /// One coloured stretch of a verse.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Highlight {
     pub color: HighlightColor,
     /// The first character covered, in chars of the verse's text.

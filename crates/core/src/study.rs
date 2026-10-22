@@ -20,6 +20,9 @@ use crate::books::{BookId, ChapterIdx, VerseRef};
 use crate::highlight;
 pub use crate::highlight::{Highlight, TextSpan};
 
+#[cfg(feature = "native")]
+pub mod sync;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HighlightColor {
@@ -65,14 +68,14 @@ impl HighlightColor {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Note {
     pub body: String,
     pub created: i64,
     pub updated: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Bookmark {
     pub label: String,
     pub created: i64,
@@ -373,10 +376,10 @@ impl StudyStore {
         self.exec("BEGIN", [])?;
         let result = f(self);
         #[cfg(feature = "native")]
-        if result.is_ok() {
-            self.exec("COMMIT", [])?;
-        } else {
-            self.exec("ROLLBACK", [])?;
+        let result = result.and_then(|()| self.exec("COMMIT", []));
+        #[cfg(feature = "native")]
+        if result.is_err() {
+            let _ = self.exec("ROLLBACK", []);
             self.load()?;
         }
         result
@@ -446,7 +449,12 @@ impl StudyStore {
             }
             None => Vec::new(),
         };
-        self.transaction(|s| s.put_highlights(v, parts))?;
+        self.transaction(|s| {
+            s.put_highlights(v, parts)?;
+            #[cfg(feature = "native")]
+            s.journal_library_changes()?;
+            Ok(())
+        })?;
         self.generation += 1;
         Ok(())
     }
@@ -469,6 +477,8 @@ impl StudyStore {
                 };
                 s.put_highlights(v, parts)?;
             }
+            #[cfg(feature = "native")]
+            s.journal_library_changes()?;
             Ok(())
         })?;
         self.generation += 1;
@@ -479,7 +489,12 @@ impl StudyStore {
     pub fn remove_highlight(&mut self, v: VerseRef, start: u32) -> Result<()> {
         let parts: Vec<Highlight> =
             self.highlight_parts(v).iter().filter(|h| h.start != start).cloned().collect();
-        self.transaction(|s| s.put_highlights(v, parts))?;
+        self.transaction(|s| {
+            s.put_highlights(v, parts)?;
+            #[cfg(feature = "native")]
+            s.journal_library_changes()?;
+            Ok(())
+        })?;
         self.generation += 1;
         Ok(())
     }
@@ -523,17 +538,22 @@ impl StudyStore {
 
     /// Saves a note; an empty (whitespace-only) body deletes it.
     pub fn set_note(&mut self, v: VerseRef, body: &str) -> Result<()> {
-        if body.trim().is_empty() {
+        self.transaction(|s| {
+            if body.trim().is_empty() {
+                #[cfg(feature = "native")]
+                s.exec(
+                    "DELETE FROM notes WHERE book = ?1 AND chapter = ?2 AND verse = ?3",
+                    params![v.book.info().code, v.chapter, v.verse],
+                )?;
+                s.notes.remove(&v.key());
+            } else {
+                let t = now();
+                s.put_note(v, body, t, t)?;
+            }
             #[cfg(feature = "native")]
-            self.exec(
-                "DELETE FROM notes WHERE book = ?1 AND chapter = ?2 AND verse = ?3",
-                params![v.book.info().code, v.chapter, v.verse],
-            )?;
-            self.notes.remove(&v.key());
-        } else {
-            let t = now();
-            self.put_note(v, body, t, t)?;
-        }
+            s.journal_library_changes()?;
+            Ok(())
+        })?;
         self.generation += 1;
         Ok(())
     }
@@ -552,17 +572,22 @@ impl StudyStore {
     }
 
     pub fn set_bookmark(&mut self, v: VerseRef, label: Option<&str>) -> Result<()> {
-        match label {
-            Some(label) => self.put_bookmark(v, label, now())?,
-            None => {
-                #[cfg(feature = "native")]
-                self.exec(
-                    "DELETE FROM bookmarks WHERE book = ?1 AND chapter = ?2 AND verse = ?3",
-                    params![v.book.info().code, v.chapter, v.verse],
-                )?;
-                self.bookmarks.remove(&v.key());
+        self.transaction(|s| {
+            match label {
+                Some(label) => s.put_bookmark(v, label, now())?,
+                None => {
+                    #[cfg(feature = "native")]
+                    s.exec(
+                        "DELETE FROM bookmarks WHERE book = ?1 AND chapter = ?2 AND verse = ?3",
+                        params![v.book.info().code, v.chapter, v.verse],
+                    )?;
+                    s.bookmarks.remove(&v.key());
+                }
             }
-        }
+            #[cfg(feature = "native")]
+            s.journal_library_changes()?;
+            Ok(())
+        })?;
         self.generation += 1;
         Ok(())
     }
@@ -986,6 +1011,8 @@ impl StudyStore {
                     s.set_plan_read(&p.id, day, passage, true)?;
                 }
             }
+            #[cfg(feature = "native")]
+            s.journal_library_changes()?;
             Ok(())
         })?;
         self.generation += 1;
@@ -994,19 +1021,24 @@ impl StudyStore {
 
     /// Erases every highlight, note, bookmark, plan and the reading history.
     pub fn erase_all(&mut self) -> Result<()> {
-        #[cfg(feature = "native")]
-        if let Some(conn) = &self.conn {
-            conn.execute_batch(
-                "DELETE FROM highlights; DELETE FROM notes; DELETE FROM bookmarks;
+        self.transaction(|s| {
+            #[cfg(feature = "native")]
+            if let Some(conn) = &s.conn {
+                conn.execute_batch(
+                    "DELETE FROM highlights; DELETE FROM notes; DELETE FROM bookmarks;
                  DELETE FROM plans; DELETE FROM plan_reads; DELETE FROM reading;",
-            )?;
-        }
-        self.highlights.clear();
-        self.notes.clear();
-        self.bookmarks.clear();
-        self.plans.clear();
-        self.plan_reads.clear();
-        self.reading.clear();
+                )?;
+            }
+            s.highlights.clear();
+            s.notes.clear();
+            s.bookmarks.clear();
+            s.plans.clear();
+            s.plan_reads.clear();
+            s.reading.clear();
+            #[cfg(feature = "native")]
+            s.journal_library_changes()?;
+            Ok(())
+        })?;
         self.generation += 1;
         Ok(())
     }

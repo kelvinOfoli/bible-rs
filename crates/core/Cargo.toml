@@ -13,7 +13,7 @@ bundled = []
 # Files, SQLite and the network: the translation library, online translations, secrets and the
 # study store's SQLite file. The web build leaves it out and keeps the model, `.bbl` files, chapter
 # layout, search, references and the study store in memory.
-native = ["import", "dep:rusqlite", "dep:ureq"]
+native = ["import", "dep:rusqlite", "dep:ureq", "dep:uuid"]
 # The importers (USFM, OSIS, Zefania, SWORD; zips), which the web build takes without `native`
 # to convert files the reader picks in the browser.
 import = ["dep:zip", "dep:flate2"]
@@ -26,6 +26,7 @@ anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 memchr.workspace = true
+uuid = { version = "1", features = ["v4"], optional = true }
 rusqlite = { version = "0.40", features = ["bundled"], optional = true }
 zip = { version = "2", default-features = false, features = ["deflate"], optional = true }
 flate2 = { version = "1", optional = true }
