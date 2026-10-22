@@ -39,7 +39,7 @@ impl NotePopover {
 
     pub fn save(&mut self, study: &mut StudyStore, actions: &mut Vec<Action>) {
         if self.note != self.saved {
-            match study.set_note(self.verse, &self.note) {
+            match study.set_note_from(self.verse, &self.note, &self.saved) {
                 Ok(()) => {
                     self.saved = self.note.clone();
                     self.saved_at = Some(bible_core::study::now());

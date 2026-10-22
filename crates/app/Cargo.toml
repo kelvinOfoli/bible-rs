@@ -38,6 +38,7 @@ libc = "0.2"
 
 # Native menu bar and window chrome (macOS only).
 [target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
 muda = { version = "0.21", default-features = false }
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = [
@@ -60,6 +61,8 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
     "NSBundle",
     "NSError",
     "NSFileManager",
+    "NSFileCoordinator",
+    "block2",
     "NSGeometry",
     "NSString",
     "NSURL",

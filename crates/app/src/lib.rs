@@ -38,6 +38,7 @@ pub mod settings_ui;
 pub mod share_sheet;
 pub mod shortcuts_overlay;
 pub mod sidebar;
+pub mod study_sync;
 pub mod theme;
 pub mod time;
 pub mod updater;

@@ -202,7 +202,7 @@ impl State {
         if let Some(e) = &mut self.editor {
             let md = to_markdown(&e.text);
             if md != e.saved {
-                actions.push(Action::SaveNote(e.verse, md.clone()));
+                actions.push(Action::SaveNote(e.verse, md.clone(), e.saved.clone()));
                 e.saved = md;
             }
             e.changed = None;

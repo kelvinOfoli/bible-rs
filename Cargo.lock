@@ -567,6 +567,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "bible-core",
+ "block2 0.6.2",
  "criterion",
  "dirs",
  "eframe",

@@ -211,6 +211,7 @@ pub struct Startup {
 }
 
 pub struct BibleApp {
+    study_sync: crate::study_sync::StudySync,
     pub data_dir: PathBuf,
     pub library: Library,
     pub study: StudyStore,
@@ -350,6 +351,7 @@ impl BibleApp {
             crate::onboarding::Onboarding::new(&cc.egui_ctx)
         });
         Self {
+            study_sync: Default::default(),
             data_dir,
             library,
             study,
@@ -455,6 +457,9 @@ impl BibleApp {
     }
 
     fn poll_tasks(&mut self, _ctx: &egui::Context) {
+        if let Err(e) = self.study_sync.tick(&mut self.study, _ctx) {
+            self.toast(_ctx, format!("Study Library: {e:#}"));
+        }
         while let Ok(r) = self.task_rx.try_recv() {
             match r {
                 TaskResult::Bibles(r) => {
@@ -882,8 +887,8 @@ impl BibleApp {
                 Err(e) => self.toast(ctx, format!("{e:#}")),
             },
             Action::OpenPage(page) => self.pages.open(page),
-            Action::SaveNote(v, body) => {
-                if let Err(e) = self.study.set_note(v, &body) {
+            Action::SaveNote(v, body, expected) => {
+                if let Err(e) = self.study.set_note_from(v, &body, &expected) {
                     self.toast(ctx, format!("Couldn't save note: {e:#}"));
                 }
             }
@@ -919,7 +924,39 @@ impl BibleApp {
                 }
             }
             Action::RevealDataDir => reveal(&self.data_dir),
+            Action::ChooseStudyLibrary { create } => {
+                let result = (|| -> Result<()> {
+                    self.study.backup_study_library(&self.data_dir)?;
+                    self.study_sync.choose(create, ctx)
+                })();
+                if let Err(e) = result {
+                    self.toast(ctx, format!("{e:#}"));
+                }
+            }
+            Action::DisconnectStudyLibrary => {
+                if let Err(e) = self.study_sync.disconnect(&mut self.study) {
+                    self.toast(ctx, format!("{e:#}"));
+                }
+            }
+            Action::SyncStudyLibrary => self.study_sync.retry(),
+            Action::ResolveStudyConflict { key, revision, reviewed } => {
+                match self.study.resolve_library_conflict_reviewed(&key, &revision, &reviewed) {
+                    Ok(()) => self.study_sync.retry(),
+                    Err(e) => self.toast(ctx, format!("{e:#}")),
+                }
+            }
             Action::TextFormat => egui::Popup::open_id(ctx, Id::new(TEXT_POPUP)),
+            Action::MergeStudyNote { key, body, reviewed } => {
+                match self.study.merge_library_note(&key, &body, &reviewed) {
+                    Ok(()) => {
+                        self.study_sync.retry();
+                        if let Some(settings) = &mut self.settings_ui {
+                            settings.merge_saved();
+                        }
+                    }
+                    Err(e) => self.toast(ctx, format!("{e:#}")),
+                }
+            }
             Action::ToggleFocus => {
                 self.focus = !self.focus;
                 if self.focus {

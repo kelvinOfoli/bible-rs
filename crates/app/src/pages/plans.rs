@@ -34,7 +34,7 @@ pub struct State {
     tab: Tab,
     /// The plan and day open in the day view.
     pub open: Option<(String, usize)>,
-    reflection: Option<(VerseRef, String)>,
+    reflection: Option<(VerseRef, String, String)>,
 }
 
 /// A plan with its progress, as of today.
@@ -870,10 +870,10 @@ impl State {
     ) -> f32 {
         let painter = ui.painter().clone();
         let saved = env.study.note(v).map(|n| n.body.clone()).unwrap_or_default();
-        if self.reflection.as_ref().is_none_or(|(rv, _)| *rv != v) {
-            self.reflection = Some((v, saved.clone()));
+        if self.reflection.as_ref().is_none_or(|(rv, _, _)| *rv != v) {
+            self.reflection = Some((v, saved.clone(), saved.clone()));
         }
-        let Some((_, draft)) = &mut self.reflection else { return at.top() };
+        let Some((_, draft, expected)) = &mut self.reflection else { return at.top() };
         let x = at.left() + 16.0;
         let w = at.width() - 32.0;
         let verse = t.and_then(|t| t.find(v)).map(|v| v.plain_text()).unwrap_or_default();
@@ -930,7 +930,7 @@ impl State {
         ui.ctx().data_mut(|d| d.insert_temp(id.with("h"), resp.rect.height()));
         let fy = card.bottom() - 16.0 - 24.0;
         text(&painter, x, fy + 4.0, 16.0, "Markdown supported", theme::ui_font(12.0), p.ink_3, false);
-        let changed = *draft != saved;
+        let changed = *draft != *expected;
         let (save, sr) = Button::new(Kind::Primary, "Save").small().enabled(changed).show_right(
             ui,
             p,
@@ -946,10 +946,12 @@ impl State {
             ui.id().with("cancel-reflection"),
         );
         if sr.clicked() {
-            actions.push(Action::SaveNote(v, draft.clone()));
+            actions.push(Action::SaveNote(v, draft.clone(), expected.clone()));
+            *expected = draft.clone();
         }
         if cr.clicked() {
-            *draft = saved;
+            *draft = saved.clone();
+            *expected = saved;
             ui.memory_mut(|m| m.surrender_focus(id));
         }
         card.bottom()

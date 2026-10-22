@@ -40,7 +40,7 @@ pub enum Action {
     RemoveHighlight(VerseRef, u32),
     RemoveNote(VerseRef),
     /// Save a note's text (an empty text removes it).
-    SaveNote(VerseRef, String),
+    SaveNote(VerseRef, String, String),
     /// Start (or restart) a reading plan today; stop one.
     StartPlan(String),
     StopPlan(String),
@@ -58,6 +58,21 @@ pub enum Action {
     EraseStudy,
     /// Show the data folder in the file browser.
     RevealDataDir,
+    ChooseStudyLibrary {
+        create: bool,
+    },
+    DisconnectStudyLibrary,
+    SyncStudyLibrary,
+    ResolveStudyConflict {
+        key: String,
+        revision: String,
+        reviewed: Vec<String>,
+    },
+    MergeStudyNote {
+        key: String,
+        body: String,
+        reviewed: Vec<String>,
+    },
     /// Focus mode: full screen with the chrome out of the way.
     ToggleFocus,
     /// Open the text & layout popover (⌘T).

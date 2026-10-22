@@ -55,9 +55,14 @@ pub struct SettingsUi {
     recording: Option<&'static str>,
     /// Data: Erase… was pressed and waits for the second click.
     confirm_erase: bool,
+    merging_note: Option<(String, Vec<String>, String)>,
 }
 
 impl SettingsUi {
+    pub fn merge_saved(&mut self) {
+        self.merging_note = None;
+    }
+
     pub fn new(tab: SettingsTab, library: &Library) -> Self {
         Self {
             tab,
@@ -72,6 +77,7 @@ impl SettingsUi {
             shortcut_filter: String::new(),
             recording: None,
             confirm_erase: false,
+            merging_note: None,
         }
     }
 
@@ -293,7 +299,7 @@ impl SettingsUi {
                     x += w + spare + 16.0;
                 }
             } else {
-                row_label(ui, p, r, "Stored in", None);
+                row_label(ui, p, r, "Local app data", None);
                 let (b, resp) = Button::new(Kind::Secondary, crate::platform::SHOW_IN_FILE_BROWSER)
                     .small()
                     .show_right(ui, p, r.right() - 16.0, r.center().y, ui.id().with("reveal"));
@@ -320,6 +326,172 @@ impl SettingsUi {
                 );
             }
         });
+        ui.add_space(24.0);
+
+        group_title(ui, p, "Study Library location");
+        let connection = study.study_library();
+        let folder = connection.as_ref().ok().and_then(|f| f.as_ref());
+        let path =
+            folder.map(|f| f.path().display().to_string()).unwrap_or_else(|| "On this device only".into());
+        rows_card(ui, p, &[56.0, 44.0], |ui, i, r| {
+            if i == 0 {
+                row_label(
+                    ui,
+                    p,
+                    r,
+                    "Study folder",
+                    Some(
+                        "Notes, highlights and bookmarks · choose iCloud Drive to share across Apple devices",
+                    ),
+                );
+                let shown =
+                    crate::pages::elide(ui.painter(), &path, &theme::ui_medium(12.0), r.width() - 160.0);
+                ui.painter().text(
+                    pos2(r.right() - 16.0, r.top() + 16.0),
+                    Align2::RIGHT_CENTER,
+                    shown,
+                    theme::ui_medium(12.0),
+                    p.ink_2,
+                );
+            } else {
+                let choices = [
+                    ("Create library…", Action::ChooseStudyLibrary { create: true }),
+                    ("Open existing…", Action::ChooseStudyLibrary { create: false }),
+                    ("Check now", Action::SyncStudyLibrary),
+                    ("Disconnect", Action::DisconnectStudyLibrary),
+                ];
+                let mut x = r.left() + 16.0;
+                for (i, (label, action)) in choices.into_iter().enumerate() {
+                    if i > 1 && folder.is_none() {
+                        continue;
+                    }
+                    let (rect, resp) = Button::new(Kind::Secondary, label).small().show_left(
+                        ui,
+                        p,
+                        x,
+                        r.center().y,
+                        ui.id().with(("study-library", i)),
+                    );
+                    if resp.clicked() {
+                        actions.push(action);
+                    }
+                    x = rect.right() + 8.0;
+                }
+            }
+        });
+        ui.add_space(8.0);
+        ui.label(RichText::new("Your database, translations, caches and preferences remain on this device. Opening a library merges study data and preserves conflicting versions.").font(theme::ui_medium(12.0)).color(p.ink_3));
+        if let Err(e) = &connection {
+            ui.label(RichText::new(format!("Needs attention: {e:#}")).color(p.danger));
+        }
+        if let Some(status) = study.setting("study-library-status") {
+            ui.label(RichText::new(status).font(theme::ui_medium(12.0)).color(p.ink_2));
+        }
+        match study.library_conflicts() {
+            Ok(conflicts) => {
+                for conflict in conflicts {
+                    ui.add_space(10.0);
+                    ui.label(
+                        RichText::new(format!(
+                            "{} · conflicting {} versions",
+                            conflict.reference, conflict.kind
+                        ))
+                        .strong()
+                        .color(p.ink),
+                    );
+                    let reviewed: Vec<_> = conflict.versions.iter().map(|v| v.id.clone()).collect();
+                    if conflict.kind == "note" {
+                        let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::hover());
+                        if Button::new(Kind::Secondary, "Merge text…")
+                            .small()
+                            .show_left(ui, p, r.left(), r.center().y, ui.id().with(("merge", &conflict.key)))
+                            .1
+                            .clicked()
+                        {
+                            let text = conflict
+                                .versions
+                                .iter()
+                                .filter(|v| !v.deleted)
+                                .map(|v| v.text.as_str())
+                                .collect::<Vec<_>>()
+                                .join("\n\n");
+                            self.merging_note = Some((conflict.key.clone(), reviewed.clone(), text));
+                        }
+                    }
+                    for version in conflict.versions {
+                        ui.push_id(&version.id, |ui| {
+                            ui.label(
+                                RichText::new(&version.text).font(theme::ui_medium(12.0)).color(p.ink_2),
+                            );
+                            let (r, _) =
+                                ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::hover());
+                            let label = if version.deleted { "Keep deletion" } else { "Keep this version" };
+                            if Button::new(Kind::Secondary, label)
+                                .small()
+                                .show_left(ui, p, r.left(), r.center().y, ui.id().with("resolve"))
+                                .1
+                                .clicked()
+                            {
+                                actions.push(Action::ResolveStudyConflict {
+                                    key: conflict.key.clone(),
+                                    revision: version.id.clone(),
+                                    reviewed: reviewed.clone(),
+                                });
+                            }
+                        });
+                    }
+                }
+            }
+            Err(e) => {
+                ui.label(RichText::new(format!("Could not read library conflicts: {e:#}")).color(p.danger));
+            }
+        }
+        let mut cancel_merge = false;
+        if let Some((key, reviewed, body)) = &mut self.merging_note {
+            ui.add_space(12.0);
+            ui.label(RichText::new("Merge the reviewed note versions").strong().color(p.ink));
+            ui.add(
+                egui::TextEdit::multiline(body)
+                    .desired_rows(6)
+                    .desired_width(f32::INFINITY)
+                    .font(theme::ui_medium(13.0)),
+            );
+            let current =
+                study.library_conflicts().ok().and_then(|all| all.into_iter().find(|c| &c.key == key));
+            let ids: Vec<_> = current
+                .as_ref()
+                .map(|c| c.versions.iter().map(|v| v.id.clone()).collect())
+                .unwrap_or_default();
+            if &ids != reviewed {
+                ui.label(
+                    RichText::new("Versions changed. Review the originals above; your merge draft is kept.")
+                        .color(p.danger),
+                );
+                if ui.button("Use these reviewed versions").clicked() {
+                    *reviewed = ids;
+                }
+            }
+            let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::hover());
+            let (save, resp) = Button::new(Kind::Primary, "Save merged note")
+                .small()
+                .enabled(!body.trim().is_empty())
+                .show_left(ui, p, r.left(), r.center().y, ui.id().with("save-merge"));
+            if resp.clicked() {
+                actions.push(Action::MergeStudyNote {
+                    key: key.clone(),
+                    body: body.clone(),
+                    reviewed: reviewed.clone(),
+                });
+            }
+            cancel_merge = Button::new(Kind::Secondary, "Cancel")
+                .small()
+                .show_left(ui, p, save.right() + 8.0, r.center().y, ui.id().with("cancel-merge"))
+                .1
+                .clicked();
+        }
+        if cancel_merge {
+            self.merging_note = None;
+        }
         ui.add_space(24.0);
 
         group_title(ui, p, "Export");
@@ -441,7 +613,11 @@ impl SettingsUi {
                     p,
                     r,
                     "Erase everything?",
-                    Some("A backup is saved first; otherwise this can't be undone."),
+                    Some(if folder.is_some() {
+                        "Notes, highlights and bookmarks will also be erased on connected devices. A backup is saved first."
+                    } else {
+                        "A backup is saved first; otherwise this can't be undone."
+                    }),
                 );
                 let (b, resp) = Button::new(Kind::Destructive, "Erase Everything").small().show_right(
                     ui,
